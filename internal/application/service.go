@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
@@ -15,6 +16,7 @@ type Service struct {
 	repo        domain.Repository
 	mailboxes   *mailboxRegistry
 	replayCache map[replayKey]Result
+	replayMu    sync.Mutex
 	now         func() time.Time
 	newID       func(string) string
 }
@@ -29,11 +31,15 @@ type replayKey struct {
 }
 
 func (s *Service) cachedReplay(datasetID, requestID string) (Result, bool) {
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
 	result, ok := s.replayCache[replayKey{datasetID: datasetID, requestID: requestID}]
 	return result, ok
 }
 
 func (s *Service) rememberReplay(datasetID, requestID string, result Result) {
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
 	s.replayCache[replayKey{datasetID: datasetID, requestID: requestID}] = result
 }
 
