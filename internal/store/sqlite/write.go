@@ -23,6 +23,9 @@ func (s *Store) Create(ctx context.Context, snapshot domain.Snapshot, event doma
 	if err := insertEventAndResult(ctx, tx, event, requestID, response); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -45,6 +48,9 @@ func (s *Store) Commit(ctx context.Context, snapshot domain.Snapshot, expectedRe
 		return err
 	}
 	if err := insertEventAndResult(ctx, tx, event, requestID, response); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return tx.Commit()

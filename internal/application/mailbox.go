@@ -6,6 +6,7 @@ import (
 )
 
 type mailRequest struct {
+	ctx   context.Context
 	fn   func(context.Context) (any, error)
 	done chan mailResult
 }
@@ -23,13 +24,17 @@ func newMailbox(capacity int) *mailbox {
 
 func (m *mailbox) run() {
 	for request := range m.queue {
-		value, err := request.fn(context.Background())
+		ctx := request.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		value, err := request.fn(ctx)
 		request.done <- mailResult{value: value, err: err}
 	}
 }
 
 func (m *mailbox) submit(ctx context.Context, fn func(context.Context) (any, error)) (any, error) {
-	request := mailRequest{fn: fn, done: make(chan mailResult, 1)}
+	request := mailRequest{ctx: ctx, fn: fn, done: make(chan mailResult, 1)}
 	select {
 	case m.queue <- request:
 	case <-ctx.Done():
