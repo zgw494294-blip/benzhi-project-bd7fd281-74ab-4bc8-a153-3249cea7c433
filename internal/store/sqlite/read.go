@@ -88,8 +88,32 @@ func normalizePage(page domain.Page) (int, int) {
 }
 
 func (s *Store) ListSamples(ctx context.Context, id string, page domain.Page) ([]domain.RecordingSample, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := ensureDatasetExists(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	limit, offset := normalizePage(page)
-	return loadSamples(ctx, s.db, id, limit, offset)
+	items, err := loadSamples(ctx, tx, id, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func ensureDatasetExists(ctx context.Context, q queryer, id string) error {
+	var exists int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM datasets WHERE id=?`, id).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return domain.NewError(domain.CodeNotFound, "数据集 %s 不存在", id)
+	}
+	return err
 }
 
 func loadSamples(ctx context.Context, q queryer, id string, limit, offset int) ([]domain.RecordingSample, error) {

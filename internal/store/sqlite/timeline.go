@@ -2,13 +2,22 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 func (s *Store) Timeline(ctx context.Context, id string, page domain.Page) ([]domain.AuditEvent, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := ensureDatasetExists(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	limit, offset := normalizePage(page)
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence,dataset_id,revision,event_type,actor,request_id,details_json,occurred_at FROM audit_events WHERE dataset_id=? ORDER BY sequence LIMIT ? OFFSET ?`, id, limit, offset)
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,dataset_id,revision,event_type,actor,request_id,details_json,occurred_at FROM audit_events WHERE dataset_id=? ORDER BY sequence LIMIT ? OFFSET ?`, id, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -29,5 +38,11 @@ func (s *Store) Timeline(ctx context.Context, id string, page domain.Page) ([]do
 		}
 		items = append(items, x)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
