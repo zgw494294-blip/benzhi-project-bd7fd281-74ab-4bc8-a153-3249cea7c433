@@ -52,12 +52,33 @@ func (s *Service) loadQuerySnapshot(ctx context.Context, datasetID string) (doma
 	s.queryLoads[datasetID] = call
 	s.queryLoadsMu.Unlock()
 
-	call.snapshot, call.err = s.repo.Load(ctx, datasetID)
+	// The shared read must be driven by a caller-independent lifecycle: the
+	// leader's own context cancellation must not abort the in-flight load that
+	// still-valid joiners are waiting on. Use a background context so the read
+	// keeps serving any requests that remain interested.
+	go s.runQueryLoad(call, datasetID)
+
+	select {
+	case <-call.done:
+		return call.snapshot, call.err
+	case <-ctx.Done():
+		return domain.Snapshot{}, ctx.Err()
+	}
+}
+
+// runQueryLoad executes the shared snapshot read and publishes the result to
+// all joiners by closing call.done. It runs on a detached context so that a
+// cancelled leader returns context.Canceled while the shared read continues to
+// serve still-valid waiters. Reads of call.snapshot/call.err by joiners happen
+// only after call.done is closed, which synchronises with the writes here.
+func (s *Service) runQueryLoad(call *queryLoadCall, datasetID string) {
+	snapshot, err := s.repo.Load(context.Background(), datasetID)
+	call.snapshot = snapshot
+	call.err = err
 	s.queryLoadsMu.Lock()
 	delete(s.queryLoads, datasetID)
-	close(call.done)
 	s.queryLoadsMu.Unlock()
-	return call.snapshot, call.err
+	close(call.done)
 }
 
 func randomID(prefix string) string {
