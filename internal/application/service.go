@@ -54,20 +54,42 @@ func (s *Service) loadSnapshot(ctx context.Context, datasetID string) (domain.Sn
 	snapshot, ok := s.snapshotCache[datasetID]
 	s.snapshotMu.RUnlock()
 	if ok {
-		return snapshot, nil
+		return cloneSnapshot(snapshot), nil
 	}
 	snapshot, err := s.repo.Load(ctx, datasetID)
 	if err != nil {
 		return domain.Snapshot{}, err
 	}
 	s.rememberSnapshot(snapshot)
-	return snapshot, nil
+	return cloneSnapshot(snapshot), nil
 }
 
 func (s *Service) rememberSnapshot(snapshot domain.Snapshot) {
 	s.snapshotMu.Lock()
 	s.snapshotCache[snapshot.Dataset.ID] = snapshot
 	s.snapshotMu.Unlock()
+}
+
+// cloneSnapshot returns a deep copy of snapshot so that the slices it
+// contains do not share backing arrays with the cached value. Command
+// handlers mutate the returned snapshot through element pointers such as
+// &snapshot.Issues[i]; without cloning those mutations would leak into the
+// cache even when the transaction that should persist them fails, leaving
+// in-memory state ahead of the repository and breaking retries with a new
+// requestId.
+func cloneSnapshot(s domain.Snapshot) domain.Snapshot {
+	c := s
+	c.Dataset.TargetTaxa = append([]string(nil), s.Dataset.TargetTaxa...)
+	c.Samples = append([]domain.RecordingSample(nil), s.Samples...)
+	c.Assessments = append([]domain.SignalAssessment(nil), s.Assessments...)
+	c.Annotations = append([]domain.AnnotationRevision(nil), s.Annotations...)
+	c.Issues = append([]domain.ReviewIssue(nil), s.Issues...)
+	c.FrozenItems = append([]domain.FrozenItem(nil), s.FrozenItems...)
+	if s.Credential != nil {
+		cred := *s.Credential
+		c.Credential = &cred
+	}
+	return c
 }
 
 func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Context, *domain.Snapshot) (Result, string, error)) (Result, error) {
