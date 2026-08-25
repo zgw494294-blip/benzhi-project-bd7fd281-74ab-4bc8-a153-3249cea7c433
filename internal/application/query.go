@@ -80,7 +80,16 @@ func (s *Service) FreezeReadiness(ctx context.Context, id string) (domain.Freeze
 	if err != nil {
 		return domain.FreezeReadiness{}, err
 	}
-	return domain.DiagnoseFreezeReadiness(snapshot)
+	key := readinessCacheKey{datasetID: id, revision: snapshot.Dataset.Revision}
+	if cached, ok := s.cachedReadiness(key); ok {
+		return cached, nil
+	}
+	result, err := domain.DiagnoseFreezeReadiness(snapshot)
+	if err != nil {
+		return domain.FreezeReadiness{}, err
+	}
+	s.rememberReadiness(key, result)
+	return result, nil
 }
 
 func (s *Service) AnnotationHistory(ctx context.Context, datasetID, sampleID string, page domain.Page) (AnnotationHistory, error) {

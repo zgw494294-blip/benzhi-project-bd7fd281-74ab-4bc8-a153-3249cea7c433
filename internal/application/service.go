@@ -6,20 +6,52 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo           domain.Repository
+	mailboxes      *mailboxRegistry
+	readinessMu    sync.RWMutex
+	readinessCache map[readinessCacheKey]domain.FreezeReadiness
+	now            func() time.Time
+	newID          func(string) string
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{
+		repo:           repo,
+		mailboxes:      newMailboxRegistry(64),
+		readinessCache: make(map[readinessCacheKey]domain.FreezeReadiness),
+		now:            time.Now,
+		newID:          randomID,
+	}
+}
+
+type readinessCacheKey struct {
+	datasetID string
+	revision  int64
+}
+
+func (s *Service) cachedReadiness(key readinessCacheKey) (domain.FreezeReadiness, bool) {
+	s.readinessMu.RLock()
+	defer s.readinessMu.RUnlock()
+	result, ok := s.readinessCache[key]
+	return result, ok
+}
+
+func (s *Service) rememberReadiness(key readinessCacheKey, result domain.FreezeReadiness) {
+	s.readinessMu.Lock()
+	defer s.readinessMu.Unlock()
+	for cachedKey := range s.readinessCache {
+		if cachedKey.datasetID == key.datasetID && cachedKey != key {
+			delete(s.readinessCache, cachedKey)
+		}
+	}
+	s.readinessCache[key] = result
 }
 
 func randomID(prefix string) string {
