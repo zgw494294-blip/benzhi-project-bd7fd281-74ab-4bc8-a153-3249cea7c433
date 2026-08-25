@@ -13,8 +13,20 @@ func (s *Service) GetDataset(ctx context.Context, id string) (DatasetView, error
 	if err != nil {
 		return DatasetView{}, err
 	}
+	samples, err := s.repo.ListSamples(ctx, id, domain.Page{Limit: 500})
+	if err != nil {
+		return DatasetView{}, err
+	}
+	issues, err := s.repo.QueryIssues(ctx, id, domain.IssueFilter{}, domain.Page{Limit: 1})
+	if err != nil {
+		return DatasetView{}, err
+	}
 	_, assessed, annotated, open, returned := statusCounts(snapshot)
-	return DatasetView{Dataset: snapshot.Dataset, SampleCount: len(snapshot.Samples), AssessmentCount: assessed, AnnotationCount: annotated, OpenIssueCount: open + returned, Credential: snapshot.Credential}, nil
+	if issues.StatusSummary != nil {
+		open = issues.StatusSummary[string(domain.IssueOpen)]
+		returned = issues.StatusSummary[string(domain.IssueReturned)]
+	}
+	return DatasetView{Dataset: snapshot.Dataset, SampleCount: len(samples), AssessmentCount: assessed, AnnotationCount: annotated, OpenIssueCount: open + returned, Credential: snapshot.Credential}, nil
 }
 func (s *Service) ListSamples(ctx context.Context, id string, page domain.Page) ([]domain.RecordingSample, error) {
 	return s.repo.ListSamples(ctx, id, page)
