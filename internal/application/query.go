@@ -68,11 +68,18 @@ func (s *Service) QueryIssues(ctx context.Context, id string, filter IssueFilter
 	if strings.TrimSpace(filter.SampleID) != filter.SampleID {
 		return IssueQueue{}, domain.NewError(domain.CodeInvalid, "sampleId 不能包含首尾空白")
 	}
+	limit, offset := normalizeApplicationPage(page)
+	cacheKey := issueCacheKey{datasetID: id, limit: limit, offset: offset}
+	if queue, ok := s.cachedIssueQueue(cacheKey); ok {
+		return queue, nil
+	}
 	result, err := s.repo.QueryIssues(ctx, id, domain.IssueFilter{Status: filter.Status, Kind: filter.Kind, Severity: filter.Severity, SampleID: filter.SampleID}, page)
 	if err != nil {
 		return IssueQueue{}, err
 	}
-	return IssueQueue{Items: result.Items, Total: result.Total, StatusSummary: result.StatusSummary, KindSummary: result.KindSummary}, nil
+	queue := IssueQueue{Items: result.Items, Total: result.Total, StatusSummary: result.StatusSummary, KindSummary: result.KindSummary}
+	s.rememberIssueQueue(cacheKey, queue)
+	return queue, nil
 }
 
 func (s *Service) FreezeReadiness(ctx context.Context, id string) (domain.FreezeReadiness, error) {

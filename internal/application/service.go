@@ -6,20 +6,35 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo         domain.Repository
+	mailboxes    *mailboxRegistry
+	now          func() time.Time
+	newID        func(string) string
+	issueCacheMu sync.Mutex
+	issueCache   map[issueCacheKey]IssueQueue
+}
+
+type issueCacheKey struct {
+	datasetID string
+	limit     int
+	offset    int
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{
+		repo:       repo,
+		mailboxes:  newMailboxRegistry(64),
+		now:        time.Now,
+		newID:      randomID,
+		issueCache: make(map[issueCacheKey]IssueQueue),
+	}
 }
 
 func randomID(prefix string) string {
@@ -82,12 +97,50 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 		if err := s.repo.Commit(inner, snapshot, expected, event, meta.RequestID, raw); err != nil {
 			return nil, err
 		}
+		s.invalidateIssueCache(meta.DatasetID)
 		return result, nil
 	})
 	if err != nil {
 		return Result{}, err
 	}
 	return value.(Result), nil
+}
+
+func cloneIssueQueue(queue IssueQueue) IssueQueue {
+	cloned := queue
+	cloned.Items = append([]domain.ReviewIssue(nil), queue.Items...)
+	cloned.StatusSummary = make(map[string]int, len(queue.StatusSummary))
+	for key, count := range queue.StatusSummary {
+		cloned.StatusSummary[key] = count
+	}
+	cloned.KindSummary = make(map[string]int, len(queue.KindSummary))
+	for key, count := range queue.KindSummary {
+		cloned.KindSummary[key] = count
+	}
+	return cloned
+}
+
+func (s *Service) cachedIssueQueue(key issueCacheKey) (IssueQueue, bool) {
+	s.issueCacheMu.Lock()
+	defer s.issueCacheMu.Unlock()
+	queue, ok := s.issueCache[key]
+	return cloneIssueQueue(queue), ok
+}
+
+func (s *Service) rememberIssueQueue(key issueCacheKey, queue IssueQueue) {
+	s.issueCacheMu.Lock()
+	defer s.issueCacheMu.Unlock()
+	s.issueCache[key] = cloneIssueQueue(queue)
+}
+
+func (s *Service) invalidateIssueCache(datasetID string) {
+	s.issueCacheMu.Lock()
+	defer s.issueCacheMu.Unlock()
+	for key := range s.issueCache {
+		if key.datasetID == datasetID {
+			delete(s.issueCache, key)
+		}
+	}
 }
 
 func (s *Service) loadConsistent(ctx context.Context, datasetID string) (domain.Snapshot, error) {
