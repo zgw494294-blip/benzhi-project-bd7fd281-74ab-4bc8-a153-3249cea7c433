@@ -6,20 +6,26 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo          domain.Repository
+	mailboxes     *mailboxRegistry
+	now           func() time.Time
+	newID         func(string) string
+	snapshotMu    sync.RWMutex
+	snapshotCache map[string]domain.Snapshot
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{
+		repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID,
+		snapshotCache: make(map[string]domain.Snapshot),
+	}
 }
 
 func randomID(prefix string) string {
@@ -43,6 +49,27 @@ func validateMetadata(meta Metadata) error {
 	return nil
 }
 
+func (s *Service) loadSnapshot(ctx context.Context, datasetID string) (domain.Snapshot, error) {
+	s.snapshotMu.RLock()
+	snapshot, ok := s.snapshotCache[datasetID]
+	s.snapshotMu.RUnlock()
+	if ok {
+		return snapshot, nil
+	}
+	snapshot, err := s.repo.Load(ctx, datasetID)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	s.rememberSnapshot(snapshot)
+	return snapshot, nil
+}
+
+func (s *Service) rememberSnapshot(snapshot domain.Snapshot) {
+	s.snapshotMu.Lock()
+	s.snapshotCache[snapshot.Dataset.ID] = snapshot
+	s.snapshotMu.Unlock()
+}
+
 func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Context, *domain.Snapshot) (Result, string, error)) (Result, error) {
 	if err := validateMetadata(meta); err != nil {
 		return Result{}, err
@@ -58,7 +85,7 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 			result.Idempotent = true
 			return result, nil
 		}
-		snapshot, err := s.repo.Load(inner, meta.DatasetID)
+		snapshot, err := s.loadSnapshot(inner, meta.DatasetID)
 		if err != nil {
 			return nil, err
 		}
@@ -82,6 +109,7 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 		if err := s.repo.Commit(inner, snapshot, expected, event, meta.RequestID, raw); err != nil {
 			return nil, err
 		}
+		s.rememberSnapshot(snapshot)
 		return result, nil
 	})
 	if err != nil {
@@ -92,7 +120,7 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 
 func (s *Service) loadConsistent(ctx context.Context, datasetID string) (domain.Snapshot, error) {
 	value, err := s.mailboxes.forDataset(datasetID).submit(ctx, func(inner context.Context) (any, error) {
-		return s.repo.Load(inner, datasetID)
+		return s.loadSnapshot(inner, datasetID)
 	})
 	if err != nil {
 		return domain.Snapshot{}, err
