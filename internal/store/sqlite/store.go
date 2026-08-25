@@ -4,16 +4,32 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db           *sql.DB
+	sharedMemory bool
+}
+
+var memoryStorePool struct {
+	sync.Mutex
+	current *Store
+}
 
 func Open(path string) (*Store, error) {
 	if path == "" {
 		path = ":memory:"
+	}
+	if path == ":memory:" {
+		memoryStorePool.Lock()
+		defer memoryStorePool.Unlock()
+		if memoryStorePool.current != nil {
+			return memoryStorePool.current, nil
+		}
 	}
 	dsn := path
 	if path == ":memory:" {
@@ -26,7 +42,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	s := &Store{db: db}
+	s := &Store{db: db, sharedMemory: path == ":memory:"}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := s.configure(ctx); err != nil {
@@ -41,6 +57,9 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if s.sharedMemory {
+		memoryStorePool.current = s
+	}
 	return s, nil
 }
 
@@ -54,4 +73,13 @@ func (s *Store) configure(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.sharedMemory {
+		memoryStorePool.Lock()
+		if memoryStorePool.current == s {
+			memoryStorePool.current = nil
+		}
+		memoryStorePool.Unlock()
+	}
+	return s.db.Close()
+}
