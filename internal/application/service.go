@@ -6,20 +6,58 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo         domain.Repository
+	mailboxes    *mailboxRegistry
+	queryLoadsMu sync.Mutex
+	queryLoads   map[string]*queryLoadCall
+	now          func() time.Time
+	newID        func(string) string
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{
+		repo:       repo,
+		mailboxes:  newMailboxRegistry(64),
+		queryLoads: make(map[string]*queryLoadCall),
+		now:        time.Now,
+		newID:      randomID,
+	}
+}
+
+type queryLoadCall struct {
+	done     chan struct{}
+	snapshot domain.Snapshot
+	err      error
+}
+
+func (s *Service) loadQuerySnapshot(ctx context.Context, datasetID string) (domain.Snapshot, error) {
+	s.queryLoadsMu.Lock()
+	if call := s.queryLoads[datasetID]; call != nil {
+		s.queryLoadsMu.Unlock()
+		select {
+		case <-call.done:
+			return call.snapshot, call.err
+		case <-ctx.Done():
+			return domain.Snapshot{}, ctx.Err()
+		}
+	}
+	call := &queryLoadCall{done: make(chan struct{})}
+	s.queryLoads[datasetID] = call
+	s.queryLoadsMu.Unlock()
+
+	call.snapshot, call.err = s.repo.Load(ctx, datasetID)
+	s.queryLoadsMu.Lock()
+	delete(s.queryLoads, datasetID)
+	close(call.done)
+	s.queryLoadsMu.Unlock()
+	return call.snapshot, call.err
 }
 
 func randomID(prefix string) string {
@@ -92,7 +130,7 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 
 func (s *Service) loadConsistent(ctx context.Context, datasetID string) (domain.Snapshot, error) {
 	value, err := s.mailboxes.forDataset(datasetID).submit(ctx, func(inner context.Context) (any, error) {
-		return s.repo.Load(inner, datasetID)
+		return s.loadQuerySnapshot(inner, datasetID)
 	})
 	if err != nil {
 		return domain.Snapshot{}, err

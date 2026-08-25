@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Service) GetDataset(ctx context.Context, id string) (DatasetView, error) {
-	snapshot, err := s.repo.Load(ctx, id)
+	snapshot, err := s.loadQuerySnapshot(ctx, id)
 	if err != nil {
 		return DatasetView{}, err
 	}
