@@ -6,20 +6,29 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"bioacoustic-release-hub/internal/domain"
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo         domain.Repository
+	mailboxes    *mailboxRegistry
+	datasetMu    sync.RWMutex
+	datasetCache map[string]datasetQueryEntry
+	now          func() time.Time
+	newID        func(string) string
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{
+		repo:         repo,
+		mailboxes:    newMailboxRegistry(64),
+		datasetCache: make(map[string]datasetQueryEntry),
+		now:          time.Now,
+		newID:        randomID,
+	}
 }
 
 func randomID(prefix string) string {

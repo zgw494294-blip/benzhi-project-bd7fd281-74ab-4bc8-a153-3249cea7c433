@@ -8,13 +8,31 @@ import (
 	"bioacoustic-release-hub/internal/domain"
 )
 
+type datasetQueryEntry struct {
+	view DatasetView
+	err  error
+}
+
 func (s *Service) GetDataset(ctx context.Context, id string) (DatasetView, error) {
+	s.datasetMu.RLock()
+	entry, ok := s.datasetCache[id]
+	s.datasetMu.RUnlock()
+	if ok {
+		return entry.view, entry.err
+	}
 	snapshot, err := s.repo.Load(ctx, id)
 	if err != nil {
+		s.datasetMu.Lock()
+		s.datasetCache[id] = datasetQueryEntry{err: err}
+		s.datasetMu.Unlock()
 		return DatasetView{}, err
 	}
 	_, assessed, annotated, open, returned := statusCounts(snapshot)
-	return DatasetView{Dataset: snapshot.Dataset, SampleCount: len(snapshot.Samples), AssessmentCount: assessed, AnnotationCount: annotated, OpenIssueCount: open + returned, Credential: snapshot.Credential}, nil
+	view := DatasetView{Dataset: snapshot.Dataset, SampleCount: len(snapshot.Samples), AssessmentCount: assessed, AnnotationCount: annotated, OpenIssueCount: open + returned, Credential: snapshot.Credential}
+	s.datasetMu.Lock()
+	s.datasetCache[id] = datasetQueryEntry{view: view}
+	s.datasetMu.Unlock()
+	return view, nil
 }
 func (s *Service) ListSamples(ctx context.Context, id string, page domain.Page) ([]domain.RecordingSample, error) {
 	return s.repo.ListSamples(ctx, id, page)
