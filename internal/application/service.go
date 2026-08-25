@@ -12,14 +12,29 @@ import (
 )
 
 type Service struct {
-	repo      domain.Repository
-	mailboxes *mailboxRegistry
-	now       func() time.Time
-	newID     func(string) string
+	repo        domain.Repository
+	mailboxes   *mailboxRegistry
+	replayCache map[replayKey]Result
+	now         func() time.Time
+	newID       func(string) string
 }
 
 func NewService(repo domain.Repository) *Service {
-	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), now: time.Now, newID: randomID}
+	return &Service{repo: repo, mailboxes: newMailboxRegistry(64), replayCache: make(map[replayKey]Result), now: time.Now, newID: randomID}
+}
+
+type replayKey struct {
+	datasetID string
+	requestID string
+}
+
+func (s *Service) cachedReplay(datasetID, requestID string) (Result, bool) {
+	result, ok := s.replayCache[replayKey{datasetID: datasetID, requestID: requestID}]
+	return result, ok
+}
+
+func (s *Service) rememberReplay(datasetID, requestID string, result Result) {
+	s.replayCache[replayKey{datasetID: datasetID, requestID: requestID}] = result
 }
 
 func randomID(prefix string) string {
@@ -48,6 +63,10 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 		return Result{}, err
 	}
 	value, err := s.mailboxes.forDataset(meta.DatasetID).submit(ctx, func(inner context.Context) (any, error) {
+		if result, ok := s.cachedReplay(meta.DatasetID, meta.RequestID); ok {
+			result.Idempotent = true
+			return result, nil
+		}
 		if raw, ok, err := s.repo.IdempotentResult(inner, meta.DatasetID, meta.RequestID); err != nil {
 			return nil, err
 		} else if ok {
@@ -82,6 +101,7 @@ func (s *Service) run(ctx context.Context, meta Metadata, fn func(context.Contex
 		if err := s.repo.Commit(inner, snapshot, expected, event, meta.RequestID, raw); err != nil {
 			return nil, err
 		}
+		s.rememberReplay(meta.DatasetID, meta.RequestID, result)
 		return result, nil
 	})
 	if err != nil {
